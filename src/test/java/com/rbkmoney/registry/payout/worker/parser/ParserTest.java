@@ -1,8 +1,7 @@
 package com.rbkmoney.registry.payout.worker.parser;
 
 import com.rbkmoney.registry.payout.worker.RegistryPayoutWorkerApplication;
-import com.rbkmoney.registry.payout.worker.model.Transactions;
-import com.rbkmoney.registry.payout.worker.parser.rsb.RsbParser;
+import com.rbkmoney.registry.payout.worker.model.TransactionsStorage;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,11 +22,9 @@ public class ParserTest {
     void testRsbParser() throws FileNotFoundException {
         File file = new File("src/test/resources/test.xls");
         InputStream inputStream = new FileInputStream(file);
-        Transactions transactions = rsbParser.parse(inputStream);
-        assertEquals(10, transactions.getInvoicePayments().size());
-        assertEquals(1, transactions.getInvoiceRefunds().size());
-        assertEquals(970, transactions.getInvoicePayments().get("1Tgz70wxfxA").get(0));
-        assertEquals(242.5, transactions.getInvoiceRefunds().get("1ThpZ6eiyh6").get(0), 0);
+        TransactionsStorage transactionsStorage = rsbParser.parse(inputStream);
+        assertEquals(10, transactionsStorage.getPayments().size());
+        assertEquals(9, transactionsStorage.getRefunds().size());
     }
 
 }

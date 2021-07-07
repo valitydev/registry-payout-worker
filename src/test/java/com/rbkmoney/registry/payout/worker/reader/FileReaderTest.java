@@ -1,27 +1,43 @@
 package com.rbkmoney.registry.payout.worker.reader;
 
+import com.rbkmoney.registry.payout.worker.RegistryPayoutWorkerApplication;
 import com.rbkmoney.registry.payout.worker.ftp.TestFtpClient;
 import com.rbkmoney.registry.payout.worker.ftp.TestFtpServer;
-import com.rbkmoney.registry.payout.worker.model.Transactions;
-import com.rbkmoney.registry.payout.worker.parser.RegistryParser;
-import com.rbkmoney.registry.payout.worker.parser.rsb.RsbParser;
+import com.rbkmoney.registry.payout.worker.handler.RegistryPayoutHandler;
+import com.rbkmoney.registry.payout.worker.handler.RsbRegistryPayoutPayoutHandler;
+import com.rbkmoney.registry.payout.worker.model.PartyShop;
+import com.rbkmoney.registry.payout.worker.model.PayoutStorage;
+import com.rbkmoney.registry.payout.worker.parser.RsbParser;
+import com.rbkmoney.registry.payout.worker.service.MockTransactions;
+import com.rbkmoney.registry.payout.worker.service.hg.InvoicingHgClientService;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.net.ftp.FTPClient;
+import org.apache.commons.net.ftp.FTPFile;
 import org.apache.ftpserver.FtpServer;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
 
 import java.io.*;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 
 @Slf4j
-public class FileReaderTest {
+@SpringBootTest(classes = RegistryPayoutWorkerApplication.class)
+public class FileReaderTest extends MockTransactions {
 
     private static final String TEST_FILE_NAME = "src/test/resources/test.xls";
     private static final String TEST_FILE_NAME_DELETE = "test.xls";
+
+    @Autowired
+    private InvoicingHgClientService invoicingClient;
+
+    @Autowired
+    private RsbParser rsbParser;
 
     @Test
     void testFileReader() throws IOException {
@@ -33,12 +49,50 @@ public class FileReaderTest {
             ftpServer.start();
             ftpClient = setFtpClient();
             storeFileOnFtp(ftpClient);
-            Transactions transactions = filereader().readDirectories(ftpClient);
-            assertEquals(10, transactions.getInvoicePayments().size());
-            assertEquals(1, transactions.getInvoiceRefunds().size());
-            assertEquals(970, transactions.getInvoicePayments().get("1Tgz70wxfxA").get(0));
-            assertEquals(242.5, transactions.getInvoiceRefunds().get("1ThpZ6eiyh6").get(0), 0);
-
+            FTPFile[] ftpDirs = ftpClient.listDirectories();
+            for (FTPFile ftpDir : ftpDirs) {
+                if (ftpDir.getName().equals(".") || ftpDir.getName().equals("..")) {
+                    continue;
+                }
+                ftpClient.changeWorkingDirectory(ftpDir.getName());
+                PayoutStorage payoutStorage = filereader().readFiles(ftpClient, "rsb");
+                assertEquals(6, payoutStorage.getPayouts().size());
+                assertEquals(-500, payoutStorage.getPayouts().get(PartyShop.builder()
+                        .partyId("testPartyId5")
+                        .shopId("testShopId6")
+                        .build())
+                        .getAmount());
+                assertEquals(1100, payoutStorage.getPayouts().get(PartyShop.builder()
+                        .partyId("testPartyId0")
+                        .shopId("testShopId0")
+                        .build())
+                        .getAmount());
+                assertEquals(1700, payoutStorage.getPayouts().get(PartyShop.builder()
+                        .partyId("testPartyId0")
+                        .shopId("testShopId1")
+                        .build())
+                        .getAmount());
+                assertEquals(1500, payoutStorage.getPayouts().get(PartyShop.builder()
+                        .partyId("testPartyId1")
+                        .shopId("testShopId1")
+                        .build())
+                        .getAmount());
+                assertEquals(2200, payoutStorage.getPayouts().get(PartyShop.builder()
+                        .partyId("testPartyId1")
+                        .shopId("testShopId2")
+                        .build())
+                        .getAmount());
+                assertEquals(1700, payoutStorage.getPayouts().get(PartyShop.builder()
+                        .partyId("testPartyId2")
+                        .shopId("testShopId2")
+                        .build())
+                        .getAmount());
+                assertNull(payoutStorage.getPayouts().get(PartyShop.builder()
+                        .partyId("testPartyId0")
+                        .shopId("testShopId2")
+                        .build()));
+                ftpClient.changeToParentDirectory();
+            }
             deleteFileFromFtp(ftpClient);
         } catch (Exception ex) {
             log.error("Received exception", ex);
@@ -77,11 +131,11 @@ public class FileReaderTest {
         ftpClient.removeDirectory("registry");
     }
 
-    FtpTransactionsReader filereader() {
-        RegistryParser registryParser = new RsbParser();
-        List<RegistryParser> list = new ArrayList<>();
+    FilePayoutStorageReader filereader() {
+        RegistryPayoutHandler registryParser = new RsbRegistryPayoutPayoutHandler(invoicingClient, rsbParser);
+        List<RegistryPayoutHandler> list = new ArrayList<>();
         list.add(registryParser);
-        return new FtpTransactionsReader(list);
+        return new FilePayoutStorageReader(list);
     }
 
 
