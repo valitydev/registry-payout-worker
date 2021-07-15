@@ -5,8 +5,7 @@ import com.rbkmoney.registry.payout.worker.handler.SkipRegistryPayoutPayoutHandl
 import com.rbkmoney.registry.payout.worker.model.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.net.ftp.FTPClient;
-import org.apache.commons.net.ftp.FTPFile;
+import net.schmizz.sshj.sftp.*;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -22,30 +21,47 @@ import static com.rbkmoney.registry.payout.worker.mapper.PayoutMapper.mapTransac
 public class FilePayoutStorageReader {
 
     private final List<RegistryPayoutHandler> handlers;
-    private static final String PATH_TO_PROCESSED_FILE = "processed";
+    private static final String PROCESSED_PATH = "processed";
 
-    public PayoutStorage readFiles(FTPClient ftpClient, String pathDir) throws IOException {
+    public PayoutStorage readFiles(SFTPClient sftpClient, RemoteResourceInfo ftpDir) throws IOException {
         PayoutStorage payoutStorage = new PayoutStorage();
-        FTPFile[] ftpFiles = ftpClient.listFiles();
-        for (FTPFile ftpFile : ftpFiles) {
-            if (ftpFile.isFile()) {
-                InputStream inputStream = ftpClient.retrieveFileStream(ftpFile.getName());
-                if (ftpClient.completePendingCommand()) {
-                    log.info("File {} was received successfully.", ftpFile.getName());
-                }
-                Map<PartyShop, List<Transaction>> transactions = handlers.stream()
-                        .filter(handler -> handler.isHadle(pathDir))
-                        .findFirst()
-                        .orElse(new SkipRegistryPayoutPayoutHandler())
-                        .handle(inputStream);
+        List<RemoteResourceInfo> resourceInfoList = sftpClient.ls(ftpDir.getPath());
+        for (RemoteResourceInfo resourceInfo : resourceInfoList) {
+            if (resourceInfo.isRegularFile()) {
+                Map<PartyShop, List<Transaction>> transactions = readFile(sftpClient, resourceInfo, ftpDir.getName());
                 payoutStorage.getPayouts().putAll(mapTransactionToPayout(transactions));
-                inputStream.close();
-                ftpClient.makeDirectory(PATH_TO_PROCESSED_FILE);
-                ftpClient.rename(ftpClient.printWorkingDirectory() + "/" + ftpFile.getName(),
-                        ftpClient.printWorkingDirectory() + "/" + PATH_TO_PROCESSED_FILE + "/" + ftpFile.getName());
+                moveFileToProcessedPath(resourceInfoList, resourceInfo, sftpClient);
             }
         }
         return payoutStorage;
+    }
+
+    private Map<PartyShop, List<Transaction>> readFile(SFTPClient sftpClient,
+                                                       RemoteResourceInfo resourceInfo,
+                                                       String providerPath) throws IOException {
+        try (RemoteFile remoteFile = sftpClient.open(resourceInfo.getPath());
+                InputStream inputStream = remoteFile.new RemoteFileInputStream(0)) {
+            log.info("File {} was received successfully", resourceInfo.getName());
+            return handlers.stream()
+                    .filter(handler -> handler.isHadle(providerPath))
+                    .findFirst()
+                    .orElse(new SkipRegistryPayoutPayoutHandler())
+                    .handle(inputStream);
+        }
+    }
+
+    private void moveFileToProcessedPath(List<RemoteResourceInfo> resourceInfoList,
+                                         RemoteResourceInfo resourceInfo,
+                                         SFTPClient sftpClient) throws IOException {
+        if (isProcessedPathNotExist(resourceInfoList)) {
+            sftpClient.mkdir(resourceInfo.getParent() + "/" + PROCESSED_PATH);
+        }
+        sftpClient.rename(resourceInfo.getPath(),
+                String.join("/", resourceInfo.getParent(), PROCESSED_PATH, resourceInfo.getName()));
+    }
+
+    private boolean isProcessedPathNotExist(final List<RemoteResourceInfo> list) {
+        return list.stream().noneMatch(o -> o.getName().equals(PROCESSED_PATH));
     }
 
 }

@@ -6,12 +6,17 @@ import com.rbkmoney.registry.payout.worker.reader.FilePayoutStorageReader;
 import com.rbkmoney.registry.payout.worker.service.payoutmngr.PayoutManagerService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.net.ftp.*;
+import net.schmizz.sshj.SSHClient;
+import net.schmizz.sshj.sftp.RemoteResourceInfo;
+import net.schmizz.sshj.sftp.SFTPClient;
+import net.schmizz.sshj.transport.verification.PromiscuousVerifier;
+import net.schmizz.sshj.userauth.keyprovider.KeyProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.util.List;
 
 @Slf4j
 @Service
@@ -25,49 +30,34 @@ public class RegistryPayoutWorkerService {
 
     @Scheduled(fixedRateString = "${scheduling.fixed.rate}")
     public void readTransactionsFromRegistries() {
-        FTPClient ftpClient = new FTPClient();
-        try {
-            ftpClient = ftpClient();
-            ftpClient.changeWorkingDirectory(ftpProperties.getParentPath());
-            FTPFile[] ftpDirs = ftpClient.listDirectories();
-            for (FTPFile ftpDir : ftpDirs) {
-                if (directoryToSkip(ftpDir.getName())) {
-                    continue;
+        try (SSHClient sshClient = new SSHClient()) {
+            initialize(sshClient);
+            try (SFTPClient sftpClient = sshClient.newSFTPClient()) {
+                List<RemoteResourceInfo> ftpDirs = sftpClient.ls(ftpProperties.getParentPath());
+                for (RemoteResourceInfo ftpDir : ftpDirs) {
+                    if (isDirectoryToSkip(ftpDir.getName()) || !ftpDir.isDirectory()) {
+                        continue;
+                    }
+                    PayoutStorage payoutStorage = filePayoutStorageReader.readFiles(sftpClient, ftpDir);
+                    payoutManagerService.sendPayouts(payoutStorage);
                 }
-                ftpClient.changeWorkingDirectory(ftpDir.getName());
-                PayoutStorage payoutStorage = filePayoutStorageReader.readFiles(ftpClient, ftpDir.getName());
-                ftpClient.changeToParentDirectory();
-                payoutManagerService.sendPayouts(payoutStorage);
             }
         } catch (Exception ex) {
             log.error("Received error while connect to Ftp client:", ex);
-        } finally {
-            closeFtp(ftpClient);
         }
     }
 
-    public FTPClient ftpClient() throws IOException {
-        FTPClient ftpClient = new FTPClient();
-        ftpClient.connect(ftpProperties.getHost());
-        ftpClient.login(ftpProperties.getUsername(), ftpProperties.getPassword());
-        ftpClient.enterLocalPassiveMode();
-        ftpClient.setFileType(FTP.BINARY_FILE_TYPE);
-        return ftpClient;
+    private void initialize(SSHClient sshClient) throws IOException {
+        sshClient.addHostKeyVerifier(new PromiscuousVerifier());
+        sshClient.setConnectTimeout(ftpProperties.getConnectTimeout());
+        sshClient.connect(ftpProperties.getHost(), ftpProperties.getPort());
+        KeyProvider keyProvider = sshClient.loadKeys(ftpProperties.getPrivateKeyPath(),
+                ftpProperties.getPrivateKeyPassphrase());
+        sshClient.authPublickey(ftpProperties.getUsername(), keyProvider);
     }
 
-    private void closeFtp(FTPClient ftpClient) {
-        try {
-            if (ftpClient != null && ftpClient.isConnected()) {
-                ftpClient.logout();
-                ftpClient.disconnect();
-            }
-        } catch (IOException ex) {
-            log.error("Received error while close FTP client: ", ex);
-        }
-    }
-
-    private boolean directoryToSkip(String dirName) {
-        return dirName.equals(".") || dirName.equals("..");
+    private boolean isDirectoryToSkip(String dirName) {
+        return dirName.startsWith(".");
     }
 
 }
